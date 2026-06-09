@@ -2,7 +2,7 @@ name: NAT签到
 
 on:
   schedule:
-    - cron: '10 3 * * *'
+    - cron: '20 4 * * *'
   workflow_dispatch:
     inputs:
       enable_recording:
