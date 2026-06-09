@@ -44,7 +44,7 @@ jobs:
           pip install -r requirements.txt
           python -c "from cloakbrowser import ensure_binary; ensure_binary()"
 
-      # 从私有仓库下载签到脚本
+      # ====================== 【私库拉取脚本】 ======================
       - name: 从私有仓库下载签到脚本
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -56,6 +56,7 @@ jobs:
           
           echo "==== 脚本下载验证 ===="
           head -20 private_repo/nat_sign_pydoll.py
+      # =============================================================
 
       - name: 下载并启动 Xray 代理
         env:
@@ -77,6 +78,8 @@ jobs:
         env:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
           USER_PASSWORD: ${{ secrets.USER_PASSWORD }}
+          APP_TOKEN: ${{ secrets.APP_TOKEN }}
+          WX_PUSHER_UID: ${{ secrets.WX_PUSHER_UID }}
           DISPLAY: ":99"
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: "llvmpipe"
@@ -100,7 +103,7 @@ jobs:
             echo "⏭️ 录屏已跳过（定时任务默认不录屏）"
           fi
 
-          # 运行私库脚本
+          # 【已修复】从私库目录运行脚本
           timeout 270 python private_repo/nat_sign_pydoll.py || echo "脚本退出码: $?"
 
           echo "=== 截图目录内容 ==="
@@ -127,27 +130,6 @@ jobs:
             /tmp/ffmpeg.log
           if-no-files-found: ignore
           retention-days: 3
-
-      # Telegram 结果推送（全局执行完毕必触发）
-      - name: Telegram 通知
-        if: always()
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: |
-          STATUS="✅ 执行成功"
-          if [[ "${{ job.status }}" != "success" ]]; then
-            STATUS="❌ 执行失败"
-          fi
-          TEXT="NAT签到任务 ${STATUS}
-运行分支: ${{ github.ref_name }}
-触发方式: ${{ github.event_name }}
-运行编号: #${{ github.run_number }}
-详情链接: ${{ github.run_url }}"
-          
-          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${TG_CHAT_ID}" \
-            -d "text=${TEXT}"
 
       - name: 清理旧的 workflow runs（只保留最近 2 个）
         if: always()
