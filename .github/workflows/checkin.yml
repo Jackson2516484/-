@@ -44,7 +44,8 @@ jobs:
           pip install -r requirements.txt
           python -c "from cloakbrowser import ensure_binary; ensure_binary()"
 
-      - name: 下载签到脚本（私库）
+      # ====================== 【私库拉取脚本】 ======================
+      - name: 从私有仓库下载签到脚本
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
@@ -52,8 +53,12 @@ jobs:
           curl -L -H "Authorization: token $GH_TOKEN" \
             "https://raw.githubusercontent.com/gunqio/zhiyong/main/nat_sign_pydoll.py" \
             -o "private_repo/nat_sign_pydoll.py"
+          
+          echo "==== 脚本下载验证 ===="
+          head -20 private_repo/nat_sign_pydoll.py
+      # =============================================================
 
-      - name: 下载并启动 Xray
+      - name: 下载并启动 Xray 代理
         env:
           V2RAY_CONFIG: ${{ secrets.V2RAY_CONFIG }}
         run: |
@@ -62,8 +67,14 @@ jobs:
           echo "$V2RAY_CONFIG" > config.json
           ./xray run -c config.json &
           sleep 5
+          echo "直连 IP："
+          curl -s --max-time 5 ifconfig.me
+          echo ""
+          echo "代理 IP："
+          curl -s --max-time 5 --socks5 127.0.0.1:10808 ifconfig.me
+          echo ""
 
-      - name: 运行签到脚本
+      - name: 运行脚本
         env:
           USER_EMAIL: ${{ secrets.USER_EMAIL }}
           USER_PASSWORD: ${{ secrets.USER_PASSWORD }}
@@ -77,22 +88,38 @@ jobs:
           Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
           XVFB_PID=$!
           sleep 2
+          DISPLAY=:99 xdpyinfo > /dev/null 2>&1 && echo "Xvfb 就绪" || echo "Xvfb 启动异常"
 
           RECORD_PID=""
           if [ "$ENABLE_RECORDING" = "true" ]; then
+            echo "🎬 录屏已开启"
             ffmpeg -f x11grab -video_size 1280x720 -framerate 15 -i :99 \
               -codec:v libx264 -preset ultrafast -crf 28 \
-              /tmp/recording.mp4 \
+              -pix_fmt yuv420p -movflags +faststart /tmp/recording.mp4 \
               > /tmp/ffmpeg.log 2>&1 &
             RECORD_PID=$!
+            sleep 3
+          else
+            echo "⏭️ 录屏已跳过（定时任务默认不录屏）"
           fi
 
-          timeout 270 python private_repo/nat_sign_pydoll.py || true
+          # 【已修复】从私库目录运行脚本
+          timeout 270 python private_repo/nat_sign_pydoll.py || echo "脚本退出码: $?"
+
+          echo "=== 截图目录内容 ==="
+          ls -la ./screenshots/ || echo "截图目录不存在"
+
+          if [ -n "$RECORD_PID" ]; then
+            sleep 2
+            kill $RECORD_PID 2>/dev/null || true
+            wait $RECORD_PID 2>/dev/null || true
+            VIDEO_SIZE=$(stat -c%s /tmp/recording.mp4 2>/dev/null || echo 0)
+            echo "录像文件大小: ${VIDEO_SIZE} bytes"
+          fi
 
           kill $XVFB_PID 2>/dev/null || true
-          kill $RECORD_PID 2>/dev/null || true
 
-      - name: 上传文件
+      - name: 上传截图和录屏
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -104,60 +131,31 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-      - name: 清理 runs（保留2个）
+      - name: 清理旧的 workflow runs（只保留最近 2 个）
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           REPO="${{ github.repository }}"
-          WORKFLOW="${{ github.workflow }}"
+          WORKFLOW_ID="${{ github.workflow }}"
 
+          echo "获取所有 runs..."
           RUN_IDS=$(gh run list \
             --repo "$REPO" \
-            --workflow "$WORKFLOW" \
+            --workflow "$WORKFLOW_ID" \
             --limit 100 \
             --json databaseId \
             --jq '.[].databaseId')
 
+          SKIP=2
           COUNT=0
-          for id in $RUN_IDS; do
-            COUNT=$((COUNT+1))
-            if [ $COUNT -le 2 ]; then
-              echo "保留 $id"
+          for RUN_ID in $RUN_IDS; do
+            COUNT=$((COUNT + 1))
+            if [ $COUNT -le $SKIP ]; then
+              echo "保留 run #$RUN_ID"
             else
-              echo "删除 $id"
-              gh run delete "$id" --repo "$REPO" || true
+              echo "删除 run #$RUN_ID"
+              gh run delete "$RUN_ID" --repo "$REPO" || true
             fi
           done
-
-      # ================= Telegram 通知 =================
-      - name: Telegram 通知
-        if: always()
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          RUN_STATUS: ${{ job.status }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
-            echo "TG 未配置，跳过"
-            exit 0
-          fi
-
-          URL="https://github.com/${REPO}/actions/runs/${RUN_ID}"
-
-          if [ "$RUN_STATUS" = "success" ]; then
-            ICON="✅"
-            TEXT="成功"
-          else
-            ICON="❌"
-            TEXT="失败"
-          fi
-
-          MSG="${ICON} NAT签到完成\n状态: ${TEXT}\n仓库: ${REPO}\n日志: ${URL}"
-
-          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TG_CHAT_ID}" \
-            -d text="${MSG}" \
-            -d disable_web_page_preview=true
+          echo "清理完成，共保留 ${SKIP} 个 run"
