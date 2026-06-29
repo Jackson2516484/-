@@ -42,6 +42,7 @@ jobs:
       - name: 安装 Python 依赖
         run: |
           pip install -r requirements.txt
+          playwright install chromium
           python -c "from cloakbrowser import ensure_binary; ensure_binary()"
 
       - name: 运行脚本
@@ -73,7 +74,6 @@ jobs:
             echo "⏭️ 录屏已跳过（定时任务默认不录屏）"
           fi
 
-          # 核心：直接调用本地根目录的 nat_sign.py 脚本
           timeout 270 python nat_sign.py || echo "脚本退出码: $?"
 
           echo "=== 截图目录内容 ==="
