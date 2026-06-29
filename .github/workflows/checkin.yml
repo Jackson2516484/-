@@ -2,7 +2,7 @@ name: NAT签到
 
 on:
   schedule:
-    - cron: '20 4 * * *'
+    - cron: '20 7 * * *'
   workflow_dispatch:
     inputs:
       enable_recording:
@@ -58,21 +58,10 @@ jobs:
           head -20 private_repo/nat_sign_pydoll.py
       # =============================================================
 
-      - name: 下载并启动 Xray 代理
-        env:
-          V2RAY_CONFIG: ${{ secrets.V2RAY_CONFIG }}
-        run: |
-          curl -sL https://github.com/XTLS/Xray-core/releases/download/v25.5.16/Xray-linux-64.zip -o xray.zip
-          unzip xray.zip && chmod +x xray
-          echo "$V2RAY_CONFIG" > config.json
-          ./xray run -c config.json &
-          sleep 5
-          echo "直连 IP："
-          curl -s --max-time 5 ifconfig.me
-          echo ""
-          echo "代理 IP："
-          curl -s --max-time 5 --socks5 127.0.0.1:10808 ifconfig.me
-          echo ""
+      # -----------------------------------------------------------------
+      # 注意：原有的 "下载并启动 Xray 代理" 步骤已在此处被完全删除
+      # 现在 GitHub Actions 将使用微软 Azure 的原生数据中心 IP 直连目标网站
+      # -----------------------------------------------------------------
 
       - name: 运行脚本
         env:
