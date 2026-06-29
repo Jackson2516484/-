@@ -1,150 +1,196 @@
-name: NAT签到
+import os
+import time
+import re
+import sys
+import ddddocr
+import requests
+from playwright.sync_api import sync_playwright
 
-on:
-  schedule:
-    - cron: '20 7 * * *'
-  workflow_dispatch:
-    inputs:
-      enable_recording:
-        description: '是否录屏 (true=录屏 / false=不录屏)'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
+USER_EMAIL = os.getenv("USER_EMAIL", "")
+USER_PASSWORD = os.getenv("USER_PASSWORD", "")
 
-jobs:
-  sign:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+def send_wxpusher(msg):
+    """如果有配置 WxPusher，则发送微信推送"""
+    app_token = os.getenv("APP_TOKEN")
+    uid = os.getenv("WX_PUSHER_UID")
+    if app_token and uid:
+        try:
+            requests.post("https://wxpusher.zjiecode.com/api/send/message", json={
+                "appToken": app_token,
+                "content": msg,
+                "summary": "NAT云自动任务通知",
+                "contentType": 1,
+                "uids": [uid]
+            })
+        except Exception as e:
+            print(f"推送失败: {e}")
 
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
+def init_browser(p):
+    """初始化浏览器，加载防检测参数"""
+    browser = p.chromium.launch(
+        headless=False, # 使用 Xvfb 虚拟屏幕，关闭无头模式更容易绕过 CF
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage"
+        ]
+    )
+    context = browser.new_context(
+        viewport={'width': 1280, 'height': 720},
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    # 注入隐藏 WebDriver 的 JS 代码
+    context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+    return browser, context.new_page()
 
-      - name: 设置 Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+def main():
+    if not USER_EMAIL or not USER_PASSWORD:
+        print("❌ 致命错误：环境变量 USER_EMAIL 或 USER_PASSWORD 未设置！")
+        sys.exit(1)
 
-      - name: 安装系统依赖
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            xvfb ffmpeg curl unzip \
-            fonts-noto-cjk \
-            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
-            libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
-            libxfixes3 libxrandr2 libgbm1 \
-            libasound2t64 || sudo apt-get install -y -qq libasound2
+    print("🚀 初始化 OCR 图形识别引擎...")
+    ocr = ddddocr.DdddOcr(show_ad=False)
+    os.makedirs("screenshots", exist_ok=True)
+    
+    notify_msg = ""
 
-      - name: 安装 Python 依赖
-        run: |
-          pip install -r requirements.txt
-          python -c "from cloakbrowser import ensure_binary; ensure_binary()"
+    with sync_playwright() as p:
+        browser, page = init_browser(p)
 
-      # ====================== 【私库拉取脚本】 ======================
-      - name: 检测私库
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          mkdir -p private_repo
-          curl -L -H "Authorization: token $GH_TOKEN" \
-            "https://raw.githubusercontent.com/gunqio/zhiyong/main/nat_sign_pydoll.py" \
-            -o "private_repo/nat_sign_pydoll.py"
-          
-          echo "==== 脚本下载验证 ===="
-          head -20 private_repo/nat_sign_pydoll.py
-      # =============================================================
+        try:
+            # ==========================================
+            # 1. 访问并绕过 Cloudflare 验证
+            # ==========================================
+            print("1️⃣ 访问登录页...")
+            page.goto("https://nat.freecloud.ltd/login", timeout=60000)
+            time.sleep(6)
+            
+            # 如果遇到 5秒盾 或 Turnstile
+            if "验证" in page.title() or "moment" in page.title().lower() or "Cloudflare" in page.content():
+                print("🛡️ 遇到 Cloudflare 安全盾，正在模拟人类等待验证...")
+                page.wait_for_selector("input[type='password']", timeout=45000)
+                print("✅ 已成功穿透 Cloudflare 防护！")
 
-      # -----------------------------------------------------------------
-      # 注意：原有的 "下载并启动 Xray 代理" 步骤已在此处被完全删除
-      # 现在 GitHub Actions 将使用微软 Azure 的原生数据中心 IP 直连目标网站
-      # -----------------------------------------------------------------
+            # ==========================================
+            # 2. 自动识别图形验证码并登录
+            # ==========================================
+            print("2️⃣ 开始登录流程...")
+            for attempt in range(5):
+                page.fill("input[type='text'], input[placeholder*='邮箱']", USER_EMAIL)
+                page.fill("input[type='password']", USER_PASSWORD)
 
-      - name: 运行脚本
-        env:
-          USER_EMAIL: ${{ secrets.USER_EMAIL }}
-          USER_PASSWORD: ${{ secrets.USER_PASSWORD }}
-          APP_TOKEN: ${{ secrets.APP_TOKEN }}
-          WX_PUSHER_UID: ${{ secrets.WX_PUSHER_UID }}
-          DISPLAY: ":99"
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: "llvmpipe"
-          ENABLE_RECORDING: ${{ github.event.inputs.enable_recording || 'false' }}
-        run: |
-          Xvfb :99 -screen 0 1280x720x24 +extension RANDR &
-          XVFB_PID=$!
-          sleep 2
-          DISPLAY=:99 xdpyinfo > /dev/null 2>&1 && echo "Xvfb 就绪" || echo "Xvfb 启动异常"
+                # 寻找并识别图形验证码
+                captcha_img = page.locator("img[src*='captcha'], img[alt*='验证码'], form img").first
+                if captcha_img.is_visible():
+                    captcha_img.screenshot(path="screenshots/captcha.png")
+                    with open("screenshots/captcha.png", "rb") as f:
+                        code = ocr.classification(f.read())
+                    print(f"🤖 OCR 第 {attempt+1} 次识别验证码结果: {code}")
+                    page.fill("input[placeholder*='验证码']", code)
 
-          RECORD_PID=""
-          if [ "$ENABLE_RECORDING" = "true" ]; then
-            echo "🎬 录屏已开启"
-            ffmpeg -f x11grab -video_size 1280x720 -framerate 15 -i :99 \
-              -codec:v libx264 -preset ultrafast -crf 28 \
-              -pix_fmt yuv420p -movflags +faststart /tmp/recording.mp4 \
-              > /tmp/ffmpeg.log 2>&1 &
-            RECORD_PID=$!
-            sleep 3
-          else
-            echo "⏭️ 录屏已跳过（定时任务默认不录屏）"
-          fi
+                # 点击登录
+                page.locator("button:has-text('登录'), button[type='submit']").click()
+                time.sleep(4)
 
-          # 【已修复】从私库目录运行脚本
-          timeout 270 python private_repo/nat_sign_pydoll.py || echo "脚本退出码: $?"
+                # 判断登录状态
+                if "login" not in page.url:
+                    print("✅ 登录成功！")
+                    notify_msg += "✅ 登录成功\n"
+                    break
+                
+                # 如果还在登录页，检查是不是验证码错了
+                if page.locator("text=验证码").is_visible() or page.locator("text=错误").is_visible():
+                    print("🔄 密码或验证码错误，点击图片刷新重试...")
+                    if captcha_img.is_visible():
+                        captcha_img.click()
+                    time.sleep(2)
+            else:
+                print("❌ 多次重试登录失败，脚本退出。")
+                page.screenshot(path="screenshots/login_failed.png")
+                sys.exit(1)
 
-          echo "=== 截图目录内容 ==="
-          ls -la ./screenshots/ || echo "截图目录不存在"
+            # ==========================================
+            # 3. 自动计算数学题并签到
+            # ==========================================
+            print("3️⃣ 前往签到页面...")
+            page.goto("https://nat.freecloud.ltd/addons?_plugin=19&_controller=index&_action=index")
+            time.sleep(3)
 
-          if [ -n "$RECORD_PID" ]; then
-            sleep 2
-            kill $RECORD_PID 2>/dev/null || true
-            wait $RECORD_PID 2>/dev/null || true
-            VIDEO_SIZE=$(stat -c%s /tmp/recording.mp4 2>/dev/null || echo 0)
-            echo "录像文件大小: ${VIDEO_SIZE} bytes"
-          fi
+            sign_btn = page.locator("text=我要签到")
+            if sign_btn.is_visible():
+                sign_btn.click()
+                time.sleep(2)
 
-          kill $XVFB_PID 2>/dev/null || true
+                # 处理算术验证 (例如: "请计算: 5 - 6")
+                math_el = page.locator("text=请计算")
+                if math_el.is_visible():
+                    math_text = math_el.inner_text().replace("请计算", "").replace(":", "").replace("：", "").strip()
+                    print(f"🧮 遇到算术签到题: {math_text}")
+                    
+                    # 使用正则提取数字和运算符
+                    match = re.search(r'(-?\d+)\s*([\+\-\*\/])\s*(-?\d+)', math_text)
+                    if match:
+                        n1, op, n2 = match.group(1), match.group(2), match.group(3)
+                        ans = int(eval(f"{n1} {op} {n2}"))
+                        print(f"🧠 计算结果: {n1} {op} {n2} = {ans}")
+                        
+                        page.fill("input[placeholder*='答案']", str(ans))
+                        page.locator("text=验证答案").click()
+                        time.sleep(3)
+                        print("✅ 签到算术验证提交完成！")
+                        notify_msg += f"✅ 签到成功 (算术题:{math_text}={ans})\n"
+                    else:
+                        print("❌ 算术题解析失败！")
+            else:
+                print("ℹ️ 今日可能已经签到过了或按钮不可见。")
+                notify_msg += "ℹ️ 今日已签到或无签到按钮\n"
+            
+            page.screenshot(path="screenshots/after_sign.png")
 
-      - name: 上传截图和录屏
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-files
-          path: |
-            ./screenshots/*.png
-            /tmp/recording.mp4
-            /tmp/ffmpeg.log
-          if-no-files-found: ignore
-          retention-days: 3
+            # ==========================================
+            # 4. 自动寻找主机并续费
+            # ==========================================
+            print("4️⃣ 开始检查主机并续费...")
+            # 前往用户中心或服务列表页
+            page.goto("https://nat.freecloud.ltd/user") 
+            time.sleep(3)
+            
+            # 寻找页面上所有的“续费”字眼并尝试点击
+            renew_btns = page.locator("text=续费")
+            count = renew_btns.count()
+            renewed_count = 0
+            
+            for i in range(count):
+                try:
+                    btn = renew_btns.nth(i)
+                    # 避免点击到单纯的文字标签，只点击按钮或链接
+                    if btn.is_visible() and btn.element_handle().tag_name.lower() in ['button', 'a', 'span']:
+                        print(f"💰 尝试点击第 {i+1} 个续费按钮...")
+                        btn.click()
+                        time.sleep(2)
+                        
+                        # 如果有二次确认弹窗，点击确定
+                        confirm = page.locator("button:has-text('确定'), button:has-text('确认')")
+                        if confirm.is_visible():
+                            confirm.click()
+                            time.sleep(2)
+                        renewed_count += 1
+                except Exception as e:
+                    pass
+            
+            print(f"🎉 续费流程结束，共尝试点击了 {renewed_count} 个续费按钮。")
+            notify_msg += f"🎉 尝试续费主机数: {renewed_count}\n"
+            page.screenshot(path="screenshots/after_renew.png")
 
-      - name: 清理旧的 workflow runs（只保留最近 2 个）
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          REPO="${{ github.repository }}"
-          WORKFLOW_ID="${{ github.workflow }}"
+            # 发送微信推送
+            send_wxpusher(notify_msg)
 
-          echo "获取所有 runs..."
-          RUN_IDS=$(gh run list \
-            --repo "$REPO" \
-            --workflow "$WORKFLOW_ID" \
-            --limit 100 \
-            --json databaseId \
-            --jq '.[].databaseId')
+        except Exception as e:
+            print(f"❌ 发生致命错误: {e}")
+            page.screenshot(path="screenshots/fatal_error.png")
+            send_wxpusher(f"❌ NAT 自动任务失败:\n{e}")
+        finally:
+            browser.close()
 
-          SKIP=2
-          COUNT=0
-          for RUN_ID in $RUN_IDS; do
-            COUNT=$((COUNT + 1))
-            if [ $COUNT -le $SKIP ]; then
-              echo "保留 run #$RUN_ID"
-            else
-              echo "删除 run #$RUN_ID"
-              gh run delete "$RUN_ID" --repo "$REPO" || true
-            fi
-          done
-          echo "清理完成，共保留 ${SKIP} 个 run"
+if __name__ == "__main__":
+    main()
