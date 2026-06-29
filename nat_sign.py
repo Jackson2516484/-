@@ -28,7 +28,6 @@ def send_wxpusher(msg):
 
 def init_browser(p):
     """启动强力绕盾模式上下文"""
-    # 强制在 Linux 下启用图形化加速特征
     browser = p.chromium.launch(
         headless=False,
         args=[
@@ -37,7 +36,9 @@ def init_browser(p):
             "--disable-dev-shm-usage",
             "--disable-infobars",
             "--window-size=1280,720",
-            "--start-maximized"
+            "--start-maximized",
+            # 【核心杀招】：彻底关闭 Chromium 的跨域 iframe 隔离，允许穿透追踪 CF 盾！
+            "--disable-features=IsolateOrigins,site-per-process" 
         ]
     )
     context = browser.new_context(
@@ -53,47 +54,55 @@ def init_browser(p):
     """)
     return browser, context.new_page()
 
-def human_like_click(page, locator):
-    """拟态真人鼠标轨迹点击，破除 Cloudflare 人机行为分析"""
-    try:
-        box = locator.bounding_box()
-        if box:
-            x = box["x"] + box["width"] / 2 + random.uniform(-5, 5)
-            y = box["y"] + box["height"] / 2 + random.uniform(-5, 5)
-            page.mouse.move(x, y, steps=random.randint(10, 20))
-            time.sleep(random.uniform(0.1, 0.3))
-            page.mouse.down()
-            time.sleep(random.uniform(0.05, 0.15))
-            page.mouse.up()
-            return True
-    except Exception:
-        pass
-    return False
-
 def bypass_cf(page):
-    """主动式 Cloudflare Turnstile 击穿逻辑"""
+    """绝对坐标鼠标狙击：专门对付嵌套在跨域 iframe 中的 CF 互动盾"""
     print("🛡️ 开始检测并物理击穿 Cloudflare 安全验证...")
-    for _ in range(12):
+    
+    # 盲点一下屏幕中央，激活焦点
+    page.mouse.move(640, 360, steps=5)
+    page.mouse.click(640, 360)
+    time.sleep(1)
+
+    for attempt in range(15):
         # 如果邮箱框出来了，说明根本没盾或盾已解开
         if page.locator("input[placeholder*='邮箱']").is_visible():
             print("✅ 页面已通畅，验证完毕！")
             return True
         
-        # 寻找 CF 验证的专属 iframe 框架或复选框
-        cf_frames = page.frames
-        for frame in cf_frames:
-            if "cloudflare" in frame.url.lower() or "turnstile" in frame.url.lower():
-                cb = frame.locator("input[type='checkbox'], .cb-lb, #challenge-stage").first
-                if cb.is_visible():
-                    print("⚡ 捕获到 CF 互动盾复选框，执行拟态击穿点击...")
-                    human_like_click(page, cb)
-                    time.sleep(4)
-        
+        try:
+            # 遍历页面上所有的 iframe
+            for iframe_loc in page.locator("iframe").all():
+                frame = iframe_loc.content_frame
+                if frame:
+                    # 查找 CF 盾的复选框
+                    cb = frame.locator("input[type='checkbox'], #challenge-stage, .cb-lb, .mark").first
+                    if cb.is_visible(timeout=500):
+                        print(f"⚡ 第 {attempt+1} 次侦测到 CF 盾，执行绝对坐标狙击...")
+                        
+                        # 提取 iframe 容器和内部复选框的坐标
+                        ibox = iframe_loc.bounding_box()
+                        cbox = cb.bounding_box()
+                        
+                        if ibox and cbox:
+                            # 核心算法：iframe绝对坐标 + 内部相对坐标 = 屏幕绝对坐标
+                            target_x = ibox["x"] + cbox["x"] + (cbox["width"] / 2)
+                            target_y = ibox["y"] + cbox["y"] + (cbox["height"] / 2)
+                            
+                            # 模拟人类：鼠标先滑到附近，再精准点下去
+                            page.mouse.move(target_x + random.randint(-15, 15), target_y + random.randint(-15, 15), steps=10)
+                            time.sleep(random.uniform(0.1, 0.3))
+                            page.mouse.move(target_x, target_y, steps=5)
+                            page.mouse.down()
+                            time.sleep(random.uniform(0.05, 0.15))
+                            page.mouse.up()
+                            time.sleep(3)
+        except Exception:
+            pass
         time.sleep(2)
     return False
 
 def solve_math_captcha(page):
-    """全局数字运算验证解决器（每次变动题型）"""
+    """全局数字运算验证解决器"""
     try:
         if page.locator("text=请计算").is_visible(timeout=2000) or page.locator("input[placeholder='请输入答案']").is_visible(timeout=1000):
             body_text = page.locator("body").inner_text()
@@ -134,7 +143,7 @@ def main():
             # 主动物理击穿 CF 盾
             if not bypass_cf(page):
                 print("⚠️ 未能通过常规击穿判定，尝试终极盲等...")
-                page.wait_for_selector("input[placeholder*='邮箱']", timeout=25000)
+                page.wait_for_selector("input[placeholder*='邮箱']", timeout=20000)
 
             print("2️⃣ 执行登录流程...")
             for attempt in range(5):
