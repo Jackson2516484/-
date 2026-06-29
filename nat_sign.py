@@ -29,6 +29,7 @@ def send_wxpusher(msg):
 def init_browser(p):
     """启动强力绕盾模式上下文"""
     browser = p.chromium.launch(
+        channel="chrome",  # 强制劫持 GitHub 云端机自带的正版 Google Chrome，解决内核被 CF 识别封杀问题
         headless=False,
         args=[
             "--disable-blink-features=AutomationControlled",
@@ -37,15 +38,14 @@ def init_browser(p):
             "--disable-infobars",
             "--window-size=1280,720",
             "--start-maximized",
-            # 【核心杀招】：彻底关闭 Chromium 的跨域 iframe 隔离，允许穿透追踪 CF 盾！
             "--disable-features=IsolateOrigins,site-per-process" 
         ]
     )
     context = browser.new_context(
         viewport={'width': 1280, 'height': 720},
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        locale="zh-CN",
+        timezone_id="Asia/Shanghai"
     )
-    # 彻底抹除自动化 WebDriver 痕迹
     context.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
         window.chrome = { runtime: {} };
@@ -55,50 +55,37 @@ def init_browser(p):
     return browser, context.new_page()
 
 def bypass_cf(page):
-    """绝对坐标鼠标狙击：专门对付嵌套在跨域 iframe 中的 CF 互动盾"""
-    print("🛡️ 开始检测并物理击穿 Cloudflare 安全验证...")
+    """应对 Cloudflare 5秒盾的终极交互逻辑（解决无限转圈超时问题）"""
+    print("🛡️ 开始检测并尝试通过 Cloudflare 安全验证...")
     
-    # 盲点一下屏幕中央，激活焦点
-    page.mouse.move(640, 360, steps=5)
     page.mouse.click(640, 360)
-    time.sleep(1)
 
-    for attempt in range(15):
-        # 如果邮箱框出来了，说明根本没盾或盾已解开
+    for attempt in range(25):
         if page.locator("input[placeholder*='邮箱']").is_visible():
-            print("✅ 页面已通畅，验证完毕！")
+            print("✅ 页面已通畅，CF盾穿透完毕！")
             return True
         
+        print(f"⏳ 正在与 CF 盾周旋，提供真人互动轨迹熵 (第 {attempt+1} 轮)...")
+        
         try:
-            # 遍历页面上所有的 iframe
+            for _ in range(4):
+                x = random.randint(100, 1100)
+                y = random.randint(100, 600)
+                page.mouse.move(x, y, steps=random.randint(3, 8))
+                time.sleep(0.1)
+                
             for iframe_loc in page.locator("iframe").all():
-                frame = iframe_loc.content_frame
-                if frame:
-                    # 查找 CF 盾的复选框
-                    cb = frame.locator("input[type='checkbox'], #challenge-stage, .cb-lb, .mark").first
-                    if cb.is_visible(timeout=500):
-                        print(f"⚡ 第 {attempt+1} 次侦测到 CF 盾，执行绝对坐标狙击...")
-                        
-                        # 提取 iframe 容器和内部复选框的坐标
-                        ibox = iframe_loc.bounding_box()
-                        cbox = cb.bounding_box()
-                        
-                        if ibox and cbox:
-                            # 核心算法：iframe绝对坐标 + 内部相对坐标 = 屏幕绝对坐标
-                            target_x = ibox["x"] + cbox["x"] + (cbox["width"] / 2)
-                            target_y = ibox["y"] + cbox["y"] + (cbox["height"] / 2)
-                            
-                            # 模拟人类：鼠标先滑到附近，再精准点下去
-                            page.mouse.move(target_x + random.randint(-15, 15), target_y + random.randint(-15, 15), steps=10)
-                            time.sleep(random.uniform(0.1, 0.3))
-                            page.mouse.move(target_x, target_y, steps=5)
-                            page.mouse.down()
-                            time.sleep(random.uniform(0.05, 0.15))
-                            page.mouse.up()
-                            time.sleep(3)
+                ibox = iframe_loc.bounding_box()
+                if ibox and ibox["width"] > 0:
+                    target_x = ibox["x"] + (ibox["width"] / 2) + random.uniform(-10, 10)
+                    target_y = ibox["y"] + (ibox["height"] / 2) + random.uniform(-10, 10)
+                    page.mouse.move(target_x, target_y, steps=4)
+                    page.mouse.click(target_x, target_y)
         except Exception:
             pass
-        time.sleep(2)
+            
+        time.sleep(1)
+        
     return False
 
 def solve_math_captcha(page):
@@ -140,7 +127,6 @@ def main():
             page.goto("https://nat.freecloud.ltd/login", timeout=60000)
             time.sleep(5)
             
-            # 主动物理击穿 CF 盾
             if not bypass_cf(page):
                 print("⚠️ 未能通过常规击穿判定，尝试终极盲等...")
                 page.wait_for_selector("input[placeholder*='邮箱']", timeout=20000)
